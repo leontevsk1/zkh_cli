@@ -1,57 +1,30 @@
-# Модели
-models/
-modules/
-**/models/
-**/modules/
-**/model_weights/
-**/*.joblib
-**/*.pkl
-**/*.bin
-**/*.safetensors
-**/config.json
-**/tokenizer_config.json
-**/vocab.*
-**/merges.txt
-**/spiece.model
-**/*.pt
-**/*.onnx
-
-# Whisper-сервис и аудиофайлы
-whisper_service/
-**/whisper_service/
-**/*.wav
-**/*.mp3
-**/*.flac
-**/*.ogg
-**/*.m4a
-**/recordings/
-**/temp_audio/
-
-# Виртуальные окружения
-.venv/
-venv/
-env/
-**/.venv/
-**/venv/
-**/env/
-
-# Кэш
+# Python
 __pycache__/
-**/__pycache__/
 *.py[cod]
-*.so
-.ipynb_checkpoints/
-.cache/
-*.log
+*.ipynb_checkpoints/
 
-# IDE / редакторы
-.vscode/
-.idea/
-*.swp
-*.swo
+# Модели
+src/ml/models/*
+!src/ml/models/README.md  # если хочешь оставить заглушку
 
-# Бэкапы
-*~
-*.bak
-*.old
-.DS_Store
+# Данные
+learn/content/*
+!learn/content/README.md  # тоже заглушка
+
+# Архивы, кэши
+*.joblib
+*.tar.gz
+*.zip
+
+# Venv и окружения
+.venv/
+.env
+*.env
+*.egg-info/
+micromamba/
+
+*.tar.gz
+src/ml/models/
+src/whisper/models/
+learn/content/
+zkh-pipeline/

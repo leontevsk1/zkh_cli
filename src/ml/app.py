@@ -5,12 +5,13 @@ import os, time, json
 import numpy as np
 import torch
 import joblib
-
+import pandas as pd
 from transformers import AutoTokenizer, AutoModelForSeq2SeqLM
 from peft import PeftConfig, PeftModel
 from huggingface_hub import snapshot_download
+from ml.utils.rule_features import RuleFeatures
 
-# ===== Контракты =====
+
 @dataclass
 class InferenceOut:
     service: str
@@ -20,35 +21,36 @@ class InferenceOut:
     summary: str | None
     meta: dict
 
-# ===== Пути к моделям =====
-ML_MODELS_ROOT = Path(__file__).resolve().parent / "models"
-ALT_MODULES_ROOT = Path(__file__).resolve().parents[2] / "modules"
-MODELS_DIR = ML_MODELS_ROOT if ML_MODELS_ROOT.exists() else ALT_MODULES_ROOT
 
-SVC_DIR = MODELS_DIR / "service_clf"
-URG_DIR = MODELS_DIR / "urgency_lgbm"
+def _dummy_clf(class_labels):
+    class _DummyClf:
+        def __init__(self, labels):
+            self.classes_ = np.array(labels)
+        def predict_proba(self, X):
+            n = len(X)
+            probs = np.zeros((n, len(self.classes_)), dtype=float)
+            probs[:, 0] = 1.0
+            return probs
+        def predict(self, X):
+            return np.array([self.classes_[0]] * len(X))
+    return _DummyClf(class_labels)
 
-SERVICE_CLF_PATH  = SVC_DIR / "service_clf_pipeline.joblib"   # теперь тут весь пайплайн
-SERVICE_META_PATH = SVC_DIR / "service_meta.json"
 
-URGENCY_PIPE_PATH = URG_DIR / "urgency_lgbm_pipeline.joblib"
-URGENCY_META_PATH = URG_DIR / "urgency_meta.json"
+def _safe_joblib_load(p: Path):
+    try:
+        return joblib.load(p)
+    except Exception:
+        return None
 
-ADAPTER_DIR = MODELS_DIR / "zkh_problem_lora"
-USE_LORA = ADAPTER_DIR.exists()
 
-# ===== Базовая модель для суммаризации =====
-base_model_name = os.getenv("PROBLEM_BASE_MODEL", None)
-if USE_LORA:
-    peft_cfg = PeftConfig.from_pretrained(ADAPTER_DIR)
-    base_model_name = base_model_name or peft_cfg.base_model_name_or_path
-if not base_model_name:
-    base_model_name = "cointegrated/rut5-small"
+def _load_json_or_default(path_json: Path, default: dict):
+    try:
+        if path_json.exists():
+            return json.loads(path_json.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return default
 
-BASE_CACHE_DIR = MODELS_DIR / "base_models" / base_model_name.replace("/", "__")
-
-os.environ.setdefault("HF_HUB_READ_TIMEOUT", "60")
-os.environ.setdefault("HF_HUB_ENABLE_HF_TRANSFER", "1")
 
 def ensure_base_model_local(repo_id: str, local_dir: Path) -> Path:
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -73,72 +75,59 @@ def ensure_base_model_local(repo_id: str, local_dir: Path) -> Path:
             time.sleep(3 * (attempt + 1))
     raise RuntimeError(f"Base model {repo_id} not found offline in {local_dir}. Last error: {last_err}")
 
-def _dummy_clf(class_labels):
-    class _DummyClf:
-        def __init__(self, labels):
-            self.classes_ = np.array(labels)
-        def predict_proba(self, X):
-            n = len(X)
-            probs = np.zeros((n, len(self.classes_)), dtype=float)
-            probs[:, 0] = 1.0
-            return probs
-        def predict(self, X):
-            return np.array([self.classes_[0]] * len(X))
-    return _DummyClf(class_labels)
 
-
-def _safe_joblib_load(p: Path):
-    try:
-        return joblib.load(p)
-    except Exception:
-        return None
-
-def _load_json_or_default(path_json: Path, default: dict):
-    try:
-        if path_json.exists():
-            return json.loads(path_json.read_text(encoding="utf-8"))
-    except Exception:
-        pass
-    return default
-
-def _load_service_pipeline() -> object:
-    obj = _safe_joblib_load(SERVICE_CLF_PATH)
-    if obj is not None and hasattr(obj, "predict_proba"):
-        return obj
-    return _dummy_clf(["other"])
-
-def _load_urgency_pipeline() -> object:
-    obj = _safe_joblib_load(URGENCY_PIPE_PATH)
-    if obj is not None and hasattr(obj, "predict"):
-        return obj
-    return _dummy_clf([1, 2, 3, 4])
-
-
-# ===== Основной класс =====
 class Models:
     def __init__(self, model_root: str | Path | None = None, device: str = "cpu"):
-        self.service_clf = _load_service_pipeline()
-        self.svc_meta    = _load_json_or_default(SERVICE_META_PATH, {"version": "unknown", "source": "unknown"})
+        self.device = device
+        self.model_root = Path(model_root).resolve() if model_root else Path(__file__).resolve().parent / "models"
 
-        self.urgency_clf = _load_urgency_pipeline()
-        self.urg_meta    = _load_json_or_default(URGENCY_META_PATH, {"version": "unknown", "source": "unknown"})
+        svc_dir = self.model_root / "service_clf"
+        urg_dir = self.model_root / "urgency_lgbm"
+        adapter_dir = self.model_root / "zkh_problem_lora"
+        base_cache_dir = self.model_root / "base_models"
+        
+        svc_path = svc_dir / "service_clf.joblib"
+        loaded_svc = _safe_joblib_load(svc_path)
+        if loaded_svc is not None and hasattr(loaded_svc, "predict_proba"):
+            self.service_clf = loaded_svc
+        else:
+            print(f"⚠️  Failed to load valid service_clf from {svc_path}, using dummy.")
+            self.service_clf = _dummy_clf(["other"])
 
-        self.local_base = ensure_base_model_local(base_model_name, BASE_CACHE_DIR)
+
+        self.svc_meta = _load_json_or_default(svc_dir / "service_meta.json", {"version": "unknown", "source": "unknown"})
+
+        self.urgency_clf = _safe_joblib_load(urg_dir / "urgency_lgbm_pipeline.joblib") or _dummy_clf([1, 2, 3, 4])
+        self.urg_meta = _load_json_or_default(urg_dir / "urgency_meta.json", {"version": "unknown", "source": "unknown"})
+
+        base_model_name = os.getenv("PROBLEM_BASE_MODEL", None)
+        if adapter_dir.exists():
+            peft_cfg = PeftConfig.from_pretrained(adapter_dir)
+            base_model_name = base_model_name or peft_cfg.base_model_name_or_path
+        if not base_model_name:
+            base_model_name = "cointegrated/rut5-small"
+
+        local_base_dir = base_cache_dir / base_model_name.replace("/", "__")
+        self.local_base = ensure_base_model_local(base_model_name, local_base_dir)
+
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(self.local_base, use_fast=True, legacy=False)
         except Exception:
             self.tokenizer = AutoTokenizer.from_pretrained(self.local_base, use_fast=False)
 
-        if ADAPTER_DIR.exists():
+        if adapter_dir.exists():
             base = AutoModelForSeq2SeqLM.from_pretrained(self.local_base, torch_dtype=torch.float32)
-            self.summarizer = PeftModel.from_pretrained(base, ADAPTER_DIR)
-            self.sum_meta = {"type": "lora", "base_model": str(self.local_base), "adapter_dir": str(ADAPTER_DIR)}
+            self.summarizer = PeftModel.from_pretrained(base, adapter_dir)
+            self.sum_meta = {"type": "lora", "base_model": str(self.local_base), "adapter_dir": str(adapter_dir)}
         else:
             self.summarizer = AutoModelForSeq2SeqLM.from_pretrained(self.local_base, torch_dtype=torch.float32)
             self.sum_meta = {"type": "base", "base_model": str(self.local_base), "adapter_dir": None}
+
         self.summarizer.eval()
-        self.device = device
-        self.summarizer.to("cpu")
+        self.summarizer.to(self.device)
+        print(f"\n✅ service_clf loaded: {type(self.service_clf)}")
+        print(f"  Классы: {getattr(self.service_clf, 'classes_', '?')}")
+        print(f"  Метаданные: {self.svc_meta}")
 
     @torch.inference_mode()
     def _summarize(self, text: str, max_new_tokens: int = 50) -> str:
@@ -146,18 +135,19 @@ class Models:
         out = self.summarizer.generate(**inputs, max_new_tokens=max_new_tokens)
         return self.tokenizer.decode(out[0], skip_special_tokens=True)
 
-    def _preprocess(self, text: str) -> str:
-        return text.strip()
-
     def infer(self, text: str) -> InferenceOut:
-        x = [text]
-
-        svc_proba = self.service_clf.predict_proba(x)[0]
+        x_text = text.strip().lower()
+        x_svc = [x_text]
+        svc_proba = self.service_clf.predict_proba(x_svc)[0]
         svc_idx = int(np.argmax(svc_proba))
         svc_label = str(self.service_clf.classes_[svc_idx])
 
-        # 💡 Новый блок для регрессора
-        urg_pred = self.urgency_clf.predict(x)[0]
+        x_urg = pd.DataFrame([{
+            "Desc": x_text,
+            "Group": svc_label
+        }])
+
+        urg_pred = self.urgency_clf.predict(x_urg)[0]
         urg_label = int(np.clip(np.rint(urg_pred), 1, 4))
 
         summary = self._summarize(text, max_new_tokens=50)
@@ -174,4 +164,3 @@ class Models:
                 "summarizer": self.sum_meta
             }
         )
-
