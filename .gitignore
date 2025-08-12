@@ -1,0 +1,57 @@
+# Модели
+models/
+modules/
+**/models/
+**/modules/
+**/model_weights/
+**/*.joblib
+**/*.pkl
+**/*.bin
+**/*.safetensors
+**/config.json
+**/tokenizer_config.json
+**/vocab.*
+**/merges.txt
+**/spiece.model
+**/*.pt
+**/*.onnx
+
+# Whisper-сервис и аудиофайлы
+whisper_service/
+**/whisper_service/
+**/*.wav
+**/*.mp3
+**/*.flac
+**/*.ogg
+**/*.m4a
+**/recordings/
+**/temp_audio/
+
+# Виртуальные окружения
+.venv/
+venv/
+env/
+**/.venv/
+**/venv/
+**/env/
+
+# Кэш
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.so
+.ipynb_checkpoints/
+.cache/
+*.log
+
+# IDE / редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Бэкапы
+*~
+*.bak
+*.old
+.DS_Store
