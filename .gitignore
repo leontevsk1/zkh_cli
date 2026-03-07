@@ -28,3 +28,5 @@ src/ml/models/
 src/whisper/models/
 learn/content/
 zkh-pipeline/
+
+spec.md
